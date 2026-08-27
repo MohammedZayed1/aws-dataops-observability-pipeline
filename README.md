@@ -60,6 +60,9 @@ EC2 Workers
             │
             ▼
         Amazon S3
+```
+
+## Technology Stack
 
 | Category                 | Technology                  |
 | ------------------------ | --------------------------- |
