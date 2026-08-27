@@ -84,7 +84,7 @@ EC2 Workers
 
 ## Current Phase
 
-Phase 1 — Project Foundation
+Phase 1 - Project Foundation
 
 ## Learning Goals
 
