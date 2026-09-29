@@ -31,7 +31,7 @@ The initial architecture consists of:
 
 - Amazon VPC
 - EC2 instances
-- Amazon Linux 2023
+- Ubuntu 22.04
 - Cribl Edge
 - node_exporter
 - Prometheus
@@ -68,7 +68,7 @@ EC2 Workers
 | ------------------------ | --------------------------- |
 | Cloud                    | AWS                         |
 | Compute                  | Amazon EC2                  |
-| Operating System         | Amazon Linux 2023           |
+| Operating System         | Ubuntu 22.04                |
 | Infrastructure as Code   | Terraform                   |
 | Configuration Management | Ansible                     |
 | Monitoring               | Prometheus                  |
@@ -103,6 +103,38 @@ This project is also intended as a practical learning exercise covering:
 * CI/CD
 * Infrastructure testing
 * Technical documentation
+
+
+## Observability and Monitoring
+
+The platform implements application and infrastructure observability using Prometheus, Node Exporter, NGINX Prometheus Exporter, and Grafana.
+
+### Monitoring Architecture
+
+```text
+EC2 Instance
+│
+├── DataOps Application
+│       │
+│       └── NGINX Status Endpoint (:8081)
+│                │
+│                ▼
+│         NGINX Prometheus Exporter
+│                │
+│                ▼
+│            Prometheus
+│                │
+│                ├── nginx_up
+│                └── Node Exporter Metrics
+│                         │
+│                         ▼
+│                      Grafana
+│                         │
+│                         ▼
+│                   Alerting
+
+
+
 
 ### Author
 
