@@ -45,3 +45,9 @@ variable "instance_type" {
   type        = string
   default     = "t3.micro"
 }
+
+variable "ami_id" {
+  description = "AMI ID used for the EC2 instance"
+  type        = string
+  default     = "ami-009b038a3a0d89866"
+}
