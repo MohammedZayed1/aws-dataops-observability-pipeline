@@ -17,54 +17,77 @@ jobs:
   build-and-push:
     name: Build and Push to ECR
     runs-on: ubuntu-latest
-  
-  steps:
 
-  - name: Checkout repository
-    uses: actions/checkout@v4
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-  - name: Debug GitHub OIDC claims
-    shell: bash
-    run: |
-      echo "Repository: $GITHUB_REPOSITORY"
-      echo "Ref: $GITHUB_REF"
-      echo "Event: $GITHUB_EVENT_NAME"
-      echo "Branch: $GITHUB_REF_NAME"
-      echo "Workflow: $GITHUB_WORKFLOW"
+      - name: Debug GitHub OIDC claims
+        shell: bash
+        run: |
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Ref: $GITHUB_REF"
+          echo "Event: $GITHUB_EVENT_NAME"
+          echo "Branch: $GITHUB_REF_NAME"
+          echo "Workflow: $GITHUB_WORKFLOW"
 
-      echo "Requesting OIDC token..."
+          echo "Requesting OIDC token..."
 
-      TOKEN=$(curl -sSf \
-        -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-        "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" \
-        | jq -r '.value')
+          TOKEN=$(curl -sSf \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" \
+            | jq -r '.value')
 
-      echo "OIDC token received."
+          echo "OIDC token received."
 
-      PAYLOAD=$(echo "$TOKEN" | cut -d '.' -f2)
+          PAYLOAD=$(echo "$TOKEN" | cut -d '.' -f2)
 
-      python3 -c '
-      import base64, json, sys
-      payload = sys.argv[1]
-      payload += "=" * (-len(payload) % 4)
-      data = json.loads(base64.urlsafe_b64decode(payload))
-      print(json.dumps({
-          "iss": data.get("iss"),
-          "aud": data.get("aud"),
-          "sub": data.get("sub"),
-          "repository": data.get("repository"),
-          "ref": data.get("ref"),
-          "repository_owner": data.get("repository_owner"),
-          "workflow": data.get("workflow")
-      }, indent=2))
-      ' "$PAYLOAD"
+          python3 -c '
+          import base64, json, sys
+          payload = sys.argv[1]
+          payload += "=" * (-len(payload) % 4)
+          data = json.loads(base64.urlsafe_b64decode(payload))
+          print(json.dumps({
+              "iss": data.get("iss"),
+              "aud": data.get("aud"),
+              "sub": data.get("sub"),
+              "repository": data.get("repository"),
+              "ref": data.get("ref"),
+              "repository_owner": data.get("repository_owner"),
+              "workflow": data.get("workflow")
+          }, indent=2))
+          ' "$PAYLOAD"
 
-  - name: Configure AWS credentials
-    uses: aws-actions/configure-aws-credentials@v4
-    with:
-      role-to-assume: arn:aws:iam::173535830796:role/aws-dataops-observability-pipeline-github-actions
-      aws-region: ${{ env.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::173535830796:role/aws-dataops-observability-pipeline-github-actions
+          aws-region: ${{ env.AWS_REGION }}
 
-  - name: Login to Amazon ECR
-    id: login-ecr
-    uses: aws-actions/amazon-ecr-login@v2
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }} \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            .
+
+      - name: Push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+      - name: Deployment summary
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          echo "Docker image pushed successfully."
+          echo "Image: $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}"
+          echo "Image: $ECR_REGISTRY/$ECR_REPOSITORY:latest"
