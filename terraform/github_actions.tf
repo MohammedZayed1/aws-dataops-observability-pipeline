@@ -35,7 +35,7 @@ resource "aws_iam_role" "github_actions" {
           }
 
           StringLike = {
-            "token.actions.githubusercontent.com:sub" = "repo:MohammedZayed1/aws-dataops-observability-pipeline:ref:refs/heads/main"
+            "token.actions.githubusercontent.com:sub" = "repo:MohammedZayed1@69474811/aws-dataops-observability-pipeline@1346644289:ref:refs/heads/main"
           }
         }
       }
