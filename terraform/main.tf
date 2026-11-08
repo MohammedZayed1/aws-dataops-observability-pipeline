@@ -172,6 +172,12 @@ resource "aws_instance" "app" {
 
   associate_public_ip_address = true
 
+  root_block_device {
+    volume_size           = 16
+    volume_type           = "gp3"
+    delete_on_termination = false
+  }
+
   tags = {
     Name = "${var.project_name}-ec2"
   }

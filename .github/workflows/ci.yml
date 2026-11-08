@@ -1,3 +1,4 @@
+
 name: DataOps CI/CD
 
 on:
@@ -16,6 +17,8 @@ permissions:
 env:
   AWS_REGION: eu-central-1
   ECR_REPOSITORY: aws-dataops-observability-pipeline-app
+  EC2_INSTANCE_ID: i-068d2b91a598e1e1c
+  EC2_PROJECT_DIR: /opt/dataops/app/aws-dataops-observability-pipeline
 
 jobs:
   build-test-push:
@@ -41,8 +44,7 @@ jobs:
             dataops-app:${{ github.sha }}
 
       - name: Wait for application
-        run: |
-          sleep 5
+        run: sleep 5
 
       - name: Smoke test application
         run: |
@@ -51,13 +53,11 @@ jobs:
 
       - name: Show container logs
         if: failure()
-        run: |
-          docker logs dataops-app-test
+        run: docker logs dataops-app-test
 
       - name: Stop and remove test container
         if: always()
-        run: |
-          docker rm -f dataops-app-test || true
+        run: docker rm -f dataops-app-test || true
 
       - name: Configure AWS credentials
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -77,12 +77,12 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
           docker tag \
-            dataops-app:${{ github.sha }} \
-            $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}
+            "dataops-app:${{ github.sha }}" \
+            "$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}"
 
           docker tag \
-            dataops-app:${{ github.sha }} \
-            $ECR_REGISTRY/$ECR_REPOSITORY:latest
+            "dataops-app:${{ github.sha }}" \
+            "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
 
       - name: Push Docker image to ECR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -90,16 +90,87 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
           docker push \
-            $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}
+            "$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}"
 
           docker push \
-            $ECR_REGISTRY/$ECR_REPOSITORY:latest
+            "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
 
-      - name: Deployment summary
+
+      - name: Deploy to EC2 through SSM
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-          echo "Docker image pushed successfully."
-          echo "Image: $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}"
-          echo "Image: $ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          REMOTE_SCRIPT=$(cat <<EOF
+          set -Eeuo pipefail
+
+          cd "$EC2_PROJECT_DIR"
+
+          aws ecr get-login-password --region "$AWS_REGION" |
+            docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+          export APP_IMAGE_TAG="$IMAGE_TAG"
+
+          docker compose pull app
+          docker compose up -d --no-deps app
+
+          for _ in $(seq 1 30); do
+            STATUS=\$(docker inspect \
+              --format='{{.State.Health.Status}}' dataops-app 2>/dev/null || true)
+
+            echo "Application health: \$STATUS"
+
+            if [ "\$STATUS" = "healthy" ]; then
+              echo "Deployment completed successfully."
+              exit 0
+            fi
+
+            sleep 5
+          done
+
+          echo "Application failed health check."
+          docker logs --tail 50 dataops-app
+          exit 1
+          EOF
+          )
+
+          jq -n --arg command "$REMOTE_SCRIPT" \
+            '{commands: [$command]}' > ssm-parameters.json
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters file://ssm-parameters.json \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "SSM Command ID: $COMMAND_ID"
+
+          for _ in $(seq 1 60); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$EC2_INSTANCE_ID" \
+              --query "Status" \
+              --output text 2>/dev/null || true)
+
+            echo "Deployment status: $STATUS"
+
+            case "$STATUS" in
+              Success)
+                echo "Deployment completed successfully."
+                exit 0
+                ;;
+              Failed|Cancelled|TimedOut)
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$EC2_INSTANCE_ID"
+                exit 1
+                ;;
+            esac
+
+            sleep 5
+          done
+
+          echo "Deployment timed out waiting for SSM."
+          exit 1

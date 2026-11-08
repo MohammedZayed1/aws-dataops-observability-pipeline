@@ -41,3 +41,38 @@ resource "aws_iam_instance_profile" "ec2_ssm" {
     Name = "${var.project_name}-ec2-ssm-profile"
   }
 }
+
+# ECR Pull Permissions for EC2
+
+resource "aws_iam_role_policy" "ec2_ecr_pull" {
+  name = "${var.project_name}-ec2-ecr-pull"
+  role = aws_iam_role.ec2_ssm.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Effect = "Allow"
+
+        Action = [
+          "ecr:GetAuthorizationToken"
+        ]
+
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+
+        Action = [
+          "ecr:DescribeRepositories",
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage"
+        ]
+
+        Resource = "arn:aws:ecr:eu-central-1:173535830796:repository/aws-dataops-observability-pipeline-app"
+      }
+    ]
+  })
+}

@@ -84,3 +84,37 @@ resource "aws_iam_role_policy" "github_actions_ecr" {
     ]
   })
 }
+
+# Permissions required for GitHub Actions to deploy through AWS SSM
+resource "aws_iam_role_policy" "github_actions_ssm" {
+  name = "${var.project_name}-github-actions-ssm"
+  role = aws_iam_role.github_actions.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Effect = "Allow"
+
+        Action = [
+          "ssm:SendCommand"
+        ]
+
+        Resource = [
+          "arn:aws:ssm:eu-central-1::document/AWS-RunShellScript",
+          "arn:aws:ec2:eu-central-1:173535830796:instance/i-068d2b91a598e1e1c"
+        ]
+      },
+      {
+        Effect = "Allow"
+
+        Action = [
+          "ssm:GetCommandInvocation"
+        ]
+
+        Resource = "*"
+      }
+    ]
+  })
+}

@@ -1,6 +1,6 @@
 services:
   app:
-    image: dataops-app:2.0
+    image: ${ECR_REGISTRY}/aws-dataops-observability-pipeline-app:${APP_IMAGE_TAG}
     container_name: dataops-app
     restart: unless-stopped
     ports:
