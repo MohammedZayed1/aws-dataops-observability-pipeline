@@ -103,7 +103,7 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           REMOTE_SCRIPT=$(cat <<EOF
-          set -Eeuo pipefail
+          set -eu
 
           cd "$EC2_PROJECT_DIR"
 
