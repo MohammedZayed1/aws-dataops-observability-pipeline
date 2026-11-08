@@ -115,18 +115,20 @@ jobs:
           docker compose pull app
           docker compose up -d --no-deps app
 
-          for _ in $(seq 1 30); do
-            STATUS=\$(docker inspect \
-              --format='{{.State.Health.Status}}' dataops-app 2>/dev/null || true)
+          attempt=0
 
-            echo "Application health: \$STATUS"
+          while [ "$attempt" -lt 30 ]; do
+            if docker inspect \
+              --format='{{.State.Health.Status}}' dataops-app 2>/dev/null |
+              grep -qx healthy; then
 
-            if [ "\$STATUS" = "healthy" ]; then
               echo "Deployment completed successfully."
               exit 0
             fi
 
+            echo "Application is not healthy yet."
             sleep 5
+            attempt=$((attempt + 1))
           done
 
           echo "Application failed health check."
