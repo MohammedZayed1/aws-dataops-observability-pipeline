@@ -96,6 +96,7 @@ jobs:
             "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
 
 
+      
       - name: Deploy to EC2 through SSM
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
@@ -117,7 +118,7 @@ jobs:
 
           attempt=0
 
-          while [ "$attempt" -lt 30 ]; do
+          while [ "\$attempt" -lt 30 ]; do
             if docker inspect \
               --format='{{.State.Health.Status}}' dataops-app 2>/dev/null |
               grep -qx healthy; then
@@ -128,7 +129,7 @@ jobs:
 
             echo "Application is not healthy yet."
             sleep 5
-            attempt=$((attempt + 1))
+            attempt=\$((attempt + 1))
           done
 
           echo "Application failed health check."
@@ -176,3 +177,4 @@ jobs:
 
           echo "Deployment timed out waiting for SSM."
           exit 1
+
