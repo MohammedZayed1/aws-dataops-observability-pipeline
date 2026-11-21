@@ -95,9 +95,6 @@ jobs:
           docker push \
             "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
 
-
-      
-
       - name: Deploy to EC2 through SSM
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
@@ -109,14 +106,16 @@ jobs:
 
           cd "$EC2_PROJECT_DIR"
 
+          echo "Authenticating with Amazon ECR..."
+
           aws ecr get-login-password --region "$AWS_REGION" |
             docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
           PREVIOUS_IMAGE=\$(docker inspect --format='{{.Config.Image}}' dataops-app)
           PREVIOUS_TAG=\${PREVIOUS_IMAGE##*:}
 
-          echo "Currently deployed image: \$PREVIOUS_IMAGE"
-          echo "Previous image tag: \$PREVIOUS_TAG"
+          echo "Previous image: \$PREVIOUS_IMAGE"
+          echo "Previous tag: \$PREVIOUS_TAG"
           echo "New image tag: $IMAGE_TAG"
 
           rollback() {
@@ -124,43 +123,64 @@ jobs:
 
             export APP_IMAGE_TAG="\$PREVIOUS_TAG"
 
-            if docker compose pull app &&
-               docker compose up -d --no-deps app; then
-
-              rollback_attempt=0
-
-              while [ "\$rollback_attempt" -lt 30 ]; do
-                if docker inspect \
-                  --format='{{.State.Health.Status}}' dataops-app 2>/dev/null |
-                  grep -qx healthy; then
-
-                  echo "Rollback completed successfully."
-                  return 0
-                fi
-
-                echo "Waiting for rollback application health..."
-                sleep 5
-                rollback_attempt=\$((rollback_attempt + 1))
-              done
+            if ! docker compose pull app; then
+              echo "ERROR: Could not pull the previous image."
+              return 1
             fi
 
-            echo "Rollback failed or restored application is unhealthy."
+            if ! docker compose up -d --no-deps app; then
+              echo "ERROR: Could not restart the previous application."
+              return 1
+            fi
+
+            rollback_attempt=0
+
+            while [ "\$rollback_attempt" -lt 30 ]; do
+              if docker inspect \
+                --format='{{.State.Health.Status}}' dataops-app 2>/dev/null |
+                grep -qx healthy; then
+
+                echo "ROLLBACK SUCCESS: Previous application is healthy."
+                echo "Restored image: \$(docker inspect --format='{{.Config.Image}}' dataops-app)"
+                return 0
+              fi
+
+              echo "Waiting for restored application health..."
+              sleep 5
+              rollback_attempt=\$((rollback_attempt + 1))
+            done
+
+            echo "ROLLBACK FAILED: Previous application did not become healthy."
             docker logs --tail 50 dataops-app || true
             return 1
           }
 
+          handle_deployment_failure() {
+            echo "New deployment failed. Attempting rollback..."
+
+            if rollback; then
+              echo "Recovery successful: previous version restored."
+            else
+              echo "CRITICAL: Deployment and rollback both failed."
+            fi
+
+            exit 1
+          }
+
           export APP_IMAGE_TAG="$IMAGE_TAG"
 
+          echo "Pulling new application image..."
+
           if ! docker compose pull app; then
-            echo "Failed to pull the new image."
-            rollback || true
-            exit 1
+            echo "ERROR: New application image pull failed."
+            handle_deployment_failure
           fi
 
+          echo "Starting new application version..."
+
           if ! docker compose up -d --no-deps app; then
-            echo "Failed to start the new application."
-            rollback || true
-            exit 1
+            echo "ERROR: New application startup failed."
+            handle_deployment_failure
           fi
 
           attempt=0
@@ -180,13 +200,10 @@ jobs:
             attempt=\$((attempt + 1))
           done
 
-          echo "New application failed its health check."
+          echo "ERROR: New application failed its health check."
           docker logs --tail 50 dataops-app || true
 
-          rollback || true
-
-          echo "Deployment failed. Previous version rollback attempted."
-          exit 1
+          handle_deployment_failure
           EOF
           )
 
@@ -217,6 +234,7 @@ jobs:
                 exit 0
                 ;;
               Failed|Cancelled|TimedOut)
+                echo "SSM deployment command failed:"
                 aws ssm get-command-invocation \
                   --command-id "$COMMAND_ID" \
                   --instance-id "$EC2_INSTANCE_ID"
@@ -229,4 +247,3 @@ jobs:
 
           echo "Deployment timed out waiting for SSM."
           exit 1
-
