@@ -136,6 +136,113 @@ EC2 Instance
 
 
 
+## CI/CD and Automated Deployment
+
+The project implements an automated CI/CD pipeline using GitHub Actions, Amazon ECR, AWS IAM OIDC, and AWS Systems Manager (SSM).
+
+The pipeline automates Docker image building, testing, publishing, and deployment to the EC2 application server.
+
+### CI/CD Architecture
+
+```text
+Developer
+    |
+    | Push to main branch
+    v
+GitHub Repository
+    |
+    v
+GitHub Actions
+    |
+    ├── Build Docker Image
+    |
+    ├── Run Application Smoke Tests
+    |
+    ├── Authenticate with AWS using GitHub OIDC
+    |
+    ├── Push Docker Image to Amazon ECR
+    |       |
+    |       ├── Commit SHA Tag
+    |       └── Latest Tag
+    |
+    v
+AWS Systems Manager (SSM)
+    |
+    v
+EC2 Instance
+    |
+    ├── Authenticate with Amazon ECR
+    |
+    ├── Pull New Application Image
+    |
+    ├── Deploy Using Docker Compose
+    |
+    └── Verify Application Health
+```
+
+### Deployment Workflow
+
+The GitHub Actions workflow (`.github/workflows/ci.yml`) performs the following operations:
+
+1. **Build:** Builds the Docker image from the application source code.
+2. **Smoke Testing:** Starts a temporary application container and verifies that the application responds successfully.
+3. **AWS Authentication:** Uses GitHub Actions OIDC to assume an AWS IAM role without storing long-lived AWS access keys in GitHub Secrets.
+4. **Image Publishing:** Pushes the Docker image to Amazon ECR using both the Git commit SHA and `latest` tags.
+5. **Remote Deployment:** Uses AWS Systems Manager Run Command to execute deployment commands on the EC2 instance.
+6. **Health Verification:** Checks the Docker container health status before considering the deployment successful.
+
+### Automated Rollback and Recovery
+
+The deployment script includes an automatic rollback mechanism designed to recover from deployment failures.
+
+Before deploying a new version, the script captures the currently running application's Docker image.
+
+If the new deployment fails during image pulling, container startup, or health verification, the rollback handler attempts to:
+
+1. Restore the previous application image.
+2. Restart the application using Docker Compose.
+3. Wait for the restored container to become healthy.
+4. Report whether recovery succeeded or failed.
+
+The deployment process returns a failure status even when rollback succeeds. This ensures that GitHub Actions accurately reports an unsuccessful deployment while distinguishing successful recovery from deployment success.
+
+### Rollback Testing and Verification
+
+The rollback mechanism was tested through a controlled failure simulation.
+
+During the test:
+
+- A new application image was successfully pulled from Amazon ECR.
+- A simulated deployment failure was triggered before replacing the running application container.
+- The rollback handler restored the previously deployed image.
+- The restored application passed its Docker health check.
+- An independent verification confirmed that the application returned HTTP 200.
+
+**Recovery verification results:**
+
+| Verification | Result |
+|---|---|
+| New image pull | Successful |
+| Failure detection | Successful |
+| Rollback execution | Successful |
+| Previous image restoration | Successful |
+| Container health | Healthy |
+| HTTP response | 200 OK |
+
+The test confirmed that the rollback handler successfully restores the previous application version after the simulated failure.
+
+### Deployment Security
+
+The CI/CD implementation follows several security practices:
+
+- GitHub OIDC authentication instead of long-lived AWS access keys.
+- IAM permissions scoped to the required AWS resources and operations.
+- AWS Systems Manager for remote server management.
+- No publicly exposed SSH access to the EC2 instance.
+- Amazon ECR for private Docker image storage.
+
+
+
 ### Author
 
 **Mohammed Zayed**
