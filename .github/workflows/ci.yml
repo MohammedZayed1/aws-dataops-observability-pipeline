@@ -100,7 +100,6 @@ jobs:
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
-          ROLLBACK_TEST: "true"
         run: |
           REMOTE_SCRIPT=$(cat <<EOF
           set -eu
@@ -174,13 +173,6 @@ jobs:
 
           if ! docker compose pull app; then
             echo "ERROR: New application image pull failed."
-            handle_deployment_failure
-          fi
-
-          echo "TEST MODE: Checking rollback test flag."
-
-          if [ "$ROLLBACK_TEST" = "true" ]; then
-            echo "TEST FAILURE: Simulated deployment failure."
             handle_deployment_failure
           fi
 
