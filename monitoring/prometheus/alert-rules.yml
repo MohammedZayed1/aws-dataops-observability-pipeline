@@ -1,0 +1,56 @@
+
+groups:
+  - name: infrastructure-alerts
+    rules:
+      # Alert when CPU usage exceeds 80% for 5 minutes
+      - alert: HighCPUUsage
+        expr: |
+          100 * (1 - avg by (instance) (
+            rate(node_cpu_seconds_total{mode="idle"}[5m])
+          )) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage on {{ $labels.instance }} has exceeded 80% for more than 5 minutes."
+
+      # Alert when available memory falls below 15%
+      - alert: HighMemoryUsage
+        expr: |
+          100 * (
+            1 - (
+              node_memory_MemAvailable_bytes
+              / node_memory_MemTotal_bytes
+            )
+          ) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage on {{ $labels.instance }} has exceeded 85% for more than 5 minutes."
+
+      # Alert when available filesystem space falls below 15%
+      - alert: LowDiskSpace
+        expr: |
+          100 * (
+            node_filesystem_avail_bytes{mountpoint="/", fstype!="rootfs"}
+            / node_filesystem_size_bytes{mountpoint="/", fstype!="rootfs"}
+          ) < 15
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Low disk space detected"
+          description: "Available disk space on {{ $labels.instance }} root filesystem is below 15%."
+
+      # Alert when a Prometheus scrape target is unavailable
+      - alert: MonitoringTargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Monitoring target is unavailable"
+          description: "Prometheus cannot scrape {{ $labels.job }} at {{ $labels.instance }}."
