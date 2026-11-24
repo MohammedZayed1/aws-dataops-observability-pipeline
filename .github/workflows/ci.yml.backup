@@ -1,0 +1,249 @@
+
+name: DataOps CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-central-1
+  ECR_REPOSITORY: aws-dataops-observability-pipeline-app
+  EC2_INSTANCE_ID: i-068d2b91a598e1e1c
+  EC2_PROJECT_DIR: /opt/dataops/app/aws-dataops-observability-pipeline
+
+jobs:
+  build-test-push:
+    name: Build, Test and Push Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t dataops-app:${{ github.sha }} \
+            .
+
+      - name: Start application container
+        run: |
+          docker run -d \
+            --name dataops-app-test \
+            -p 8080:80 \
+            -p 8081:8081 \
+            dataops-app:${{ github.sha }}
+
+      - name: Wait for application
+        run: sleep 5
+
+      - name: Smoke test application
+        run: |
+          curl --fail --silent --show-error \
+            http://localhost:8080/
+
+      - name: Show container logs
+        if: failure()
+        run: docker logs dataops-app-test
+
+      - name: Stop and remove test container
+        if: always()
+        run: docker rm -f dataops-app-test || true
+
+      - name: Configure AWS credentials
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::173535830796:role/aws-dataops-observability-pipeline-github-actions
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Tag Docker image for ECR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker tag \
+            "dataops-app:${{ github.sha }}" \
+            "$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}"
+
+          docker tag \
+            "dataops-app:${{ github.sha }}" \
+            "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+
+      - name: Push Docker image to ECR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker push \
+            "$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}"
+
+          docker push \
+            "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+
+      - name: Deploy to EC2 through SSM
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          REMOTE_SCRIPT=$(cat <<EOF
+          set -eu
+
+          cd "$EC2_PROJECT_DIR"
+
+          echo "Authenticating with Amazon ECR..."
+
+          aws ecr get-login-password --region "$AWS_REGION" |
+            docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+          PREVIOUS_IMAGE=\$(docker inspect --format='{{.Config.Image}}' dataops-app)
+          PREVIOUS_TAG=\${PREVIOUS_IMAGE##*:}
+
+          echo "Previous image: \$PREVIOUS_IMAGE"
+          echo "Previous tag: \$PREVIOUS_TAG"
+          echo "New image tag: $IMAGE_TAG"
+
+          rollback() {
+            echo "Starting rollback to \$PREVIOUS_TAG..."
+
+            export APP_IMAGE_TAG="\$PREVIOUS_TAG"
+
+            if ! docker compose pull app; then
+              echo "ERROR: Could not pull the previous image."
+              return 1
+            fi
+
+            if ! docker compose up -d --no-deps app; then
+              echo "ERROR: Could not restart the previous application."
+              return 1
+            fi
+
+            rollback_attempt=0
+
+            while [ "\$rollback_attempt" -lt 30 ]; do
+              if docker inspect \
+                --format='{{.State.Health.Status}}' dataops-app 2>/dev/null |
+                grep -qx healthy; then
+
+                echo "ROLLBACK SUCCESS: Previous application is healthy."
+                echo "Restored image: \$(docker inspect --format='{{.Config.Image}}' dataops-app)"
+                return 0
+              fi
+
+              echo "Waiting for restored application health..."
+              sleep 5
+              rollback_attempt=\$((rollback_attempt + 1))
+            done
+
+            echo "ROLLBACK FAILED: Previous application did not become healthy."
+            docker logs --tail 50 dataops-app || true
+            return 1
+          }
+
+          handle_deployment_failure() {
+            echo "New deployment failed. Attempting rollback..."
+
+            if rollback; then
+              echo "Recovery successful: previous version restored."
+            else
+              echo "CRITICAL: Deployment and rollback both failed."
+            fi
+
+            exit 1
+          }
+
+          export APP_IMAGE_TAG="$IMAGE_TAG"
+
+          echo "Pulling new application image..."
+
+          if ! docker compose pull app; then
+            echo "ERROR: New application image pull failed."
+            handle_deployment_failure
+          fi
+
+          echo "Starting new application version..."
+
+          if ! docker compose up -d --no-deps app; then
+            echo "ERROR: New application startup failed."
+            handle_deployment_failure
+          fi
+
+          attempt=0
+
+          while [ "\$attempt" -lt 30 ]; do
+            if docker inspect \
+              --format='{{.State.Health.Status}}' dataops-app 2>/dev/null |
+              grep -qx healthy; then
+
+              echo "New application version is healthy."
+              echo "Deployment completed successfully."
+              exit 0
+            fi
+
+            echo "Waiting for new application health..."
+            sleep 5
+            attempt=\$((attempt + 1))
+          done
+
+          echo "ERROR: New application failed its health check."
+          docker logs --tail 50 dataops-app || true
+
+          handle_deployment_failure
+          EOF
+          )
+
+          jq -n --arg command "$REMOTE_SCRIPT" \
+            '{commands: [$command]}' > ssm-parameters.json
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters file://ssm-parameters.json \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "SSM Command ID: $COMMAND_ID"
+
+          for _ in $(seq 1 60); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$EC2_INSTANCE_ID" \
+              --query "Status" \
+              --output text 2>/dev/null || true)
+
+            echo "Deployment status: $STATUS"
+
+            case "$STATUS" in
+              Success)
+                echo "Deployment completed successfully."
+                exit 0
+                ;;
+              Failed|Cancelled|TimedOut)
+                echo "SSM deployment command failed:"
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$EC2_INSTANCE_ID"
+                exit 1
+                ;;
+            esac
+
+            sleep 5
+          done
+
+          echo "Deployment timed out waiting for SSM."
+          exit 1
